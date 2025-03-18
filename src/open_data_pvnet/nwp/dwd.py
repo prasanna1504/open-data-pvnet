@@ -43,7 +43,13 @@ def generate_variable_url(variable: str, year: int, month: int, day: int, hour: 
 
     Returns:
         str: The URL for the specified variable and time
+
+    Raises:
+        ValueError: If hour is not between 0 and 23
     """
+    if not 0 <= hour <= 23:
+        raise ValueError("Hour must be between 0 and 23")
+
     base_url = "https://opendata.dwd.de/weather/nwp/icon-eu/grib"
     timestamp = f"{year:04d}{month:02d}{day:02d}{hour:02d}"
     return f"{base_url}/{hour:02d}/{variable.lower()}/icon-eu_europe_regular-lat-lon_single-level_{timestamp}_*"

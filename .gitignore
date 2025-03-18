@@ -94,3 +94,4 @@ node_modules/
 
 # Data
 data/
+!tests/data/  # Allow test data files

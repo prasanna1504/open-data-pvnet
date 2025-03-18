@@ -113,14 +113,14 @@ def test_process_dwd_data_success(mocker, mock_config, tmp_path):
 
     # Create test file path and config
     test_file = tmp_path / "test.grib2"
-    test_config = mock_config["grid"]
+    test_config = {"grid": mock_config["grid"]}  # Wrap grid config in expected structure
 
     # Call function
     result = process_dwd_data(str(test_file), test_config)
 
     # Assertions
     assert isinstance(result, xr.Dataset)
-    assert "t2m" in result.data_vars
+    assert "t_2m" in result.data_vars  # Check for the renamed variable
     mock_open_dataset.assert_called_once()
 
 
@@ -137,7 +137,7 @@ def test_process_dwd_data_invalid_dimensions(mocker, mock_config, tmp_path):
 
     # Create test file path and config
     test_file = tmp_path / "test.grib2"
-    test_config = mock_config["grid"]
+    test_config = {"grid": mock_config["grid"]}  # Wrap grid config in expected structure
 
     # Call function and check exception
     with pytest.raises(ValueError, match="Dataset dimensions .* do not match expected dimensions"):
@@ -147,7 +147,7 @@ def test_process_dwd_data_invalid_dimensions(mocker, mock_config, tmp_path):
 def test_process_dwd_data_no_files(mocker, mock_config):
     """Test processing when no files are downloaded."""
     with pytest.raises(FileNotFoundError):
-        process_dwd_data("nonexistent_file.grib2", mock_config["grid"])
+        process_dwd_data("nonexistent_file.grib2", {"grid": mock_config["grid"]})  # Wrap grid config
 
 
 def test_process_dwd_data_corrupt_file(mocker, mock_config, tmp_path):
