@@ -1,5 +1,7 @@
 import argparse
 import logging
+import calendar
+from datetime import datetime
 from open_data_pvnet.utils.env_loader import load_environment_variables
 from open_data_pvnet.utils.data_downloader import (
     load_zarr_data,
@@ -10,7 +12,7 @@ from open_data_pvnet.utils.data_downloader import (
 )
 from pathlib import Path
 import concurrent.futures
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 from open_data_pvnet.scripts.archive import handle_archive
 from open_data_pvnet.nwp.met_office import CONFIG_PATHS
 from open_data_pvnet.nwp.dwd import process_dwd_data
@@ -20,6 +22,104 @@ logger = logging.getLogger(__name__)
 PROVIDERS = ["metoffice", "gfs", "dwd"]
 DEFAULT_REGION = "global"  # Default region for Met Office datasets
 
+# Provider-specific configurations
+PROVIDER_CONFIGS = {
+    "metoffice": {
+        "regions": ["global", "uk"],
+        "default_region": "global",
+        "hours": range(24),
+    },
+    "dwd": {
+        "regions": ["eu"],
+        "default_region": "eu",
+        "hours": range(24),
+    },
+    "gfs": {
+        "regions": ["global"],
+        "default_region": "global",
+        "hours": range(0, 24, 3),  # GFS data is available every 3 hours
+    },
+}
+
+def validate_date(year: int, month: int, day: int = None) -> None:
+    """
+    Validate date arguments.
+
+    Args:
+        year (int): Year value
+        month (int): Month value (1-12)
+        day (int, optional): Day value (1-31)
+
+    Raises:
+        ValueError: If any date component is invalid
+    """
+    current_year = datetime.now().year
+    
+    if not (1900 <= year <= current_year + 1):
+        raise ValueError(f"Year must be between 1900 and {current_year + 1}")
+    
+    if not (1 <= month <= 12):
+        raise ValueError("Month must be between 1 and 12")
+    
+    if day is not None:
+        max_days = calendar.monthrange(year, month)[1]
+        if not (1 <= day <= max_days):
+            raise ValueError(f"Day must be between 1 and {max_days} for {calendar.month_name[month]} {year}")
+
+def validate_hour(hour: int, provider: str) -> None:
+    """
+    Validate hour argument for a specific provider.
+
+    Args:
+        hour (int): Hour value
+        provider (str): Provider name
+
+    Raises:
+        ValueError: If hour is invalid for the provider
+    """
+    valid_hours = PROVIDER_CONFIGS[provider]["hours"]
+    if hour not in valid_hours:
+        if len(valid_hours) == 24:
+            raise ValueError("Hour must be between 0 and 23")
+        else:
+            valid_hours_str = ", ".join(map(str, valid_hours))
+            raise ValueError(f"Hour must be one of: {valid_hours_str}")
+
+def validate_region(region: str, provider: str) -> None:
+    """
+    Validate region argument for a specific provider.
+
+    Args:
+        region (str): Region value
+        provider (str): Provider name
+
+    Raises:
+        ValueError: If region is invalid for the provider
+    """
+    valid_regions = PROVIDER_CONFIGS[provider]["regions"]
+    if region not in valid_regions:
+        raise ValueError(f"Region must be one of: {', '.join(valid_regions)}")
+
+def validate_arguments(args: argparse.Namespace) -> None:
+    """
+    Validate command line arguments.
+
+    Args:
+        args (argparse.Namespace): Parsed command line arguments
+
+    Raises:
+        ValueError: If any argument is invalid
+    """
+    if args.command not in PROVIDERS:
+        raise ValueError(f"Provider must be one of: {', '.join(PROVIDERS)}")
+
+    validate_date(args.year, args.month, args.day)
+    
+    if hasattr(args, "hour") and args.hour is not None:
+        validate_hour(args.hour, args.command)
+    
+    if hasattr(args, "region"):
+        validate_region(args.region, args.command)
 
 def load_env_and_setup_logger():
     """Initialize environment variables and configure logging.
@@ -33,12 +133,18 @@ def load_env_and_setup_logger():
     """
     try:
         load_environment_variables()
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        )
         logger.info("Environment variables loaded successfully.")
     except FileNotFoundError as e:
         logger.error(f"Error loading environment variables: {e}")
         raise
-
+    except Exception as e:
+        logger.error(f"Unexpected error during environment setup: {e}")
+        raise
 
 def _add_common_arguments(parser, provider_name):
     """Add arguments common to both archive and load operations."""
@@ -51,34 +157,30 @@ def _add_common_arguments(parser, provider_name):
         default=None,
     )
 
-    # Add Met Office specific arguments
-    if provider_name == "metoffice":
-        parser.add_argument(
-            "--hour",
-            type=int,
-            help="Hour of data (0-23). If not specified, process all hours of the day.",
-            default=None,
-        )
-        parser.add_argument(
-            "--region",
-            choices=["global", "uk"],
-            default="global",
-            help="Specify the Met Office dataset region (default: global)",
-        )
-    # Add DWD specific arguments
-    elif provider_name == "dwd":
-        parser.add_argument(
-            "--hour",
-            type=int,
-            help="Hour of data (0-23). If not specified, process all hours of the day.",
-            default=None,
-        )
-        parser.add_argument(
-            "--region",
-            choices=["eu"],
-            default="eu",
-            help="Specify the DWD dataset region (default: eu)",
-        )
+    # Add provider-specific arguments
+    if provider_name in PROVIDER_CONFIGS:
+        config = PROVIDER_CONFIGS[provider_name]
+        
+        if len(config["hours"]) > 0:
+            hour_help = (
+                "Hour of data (0-23)"
+                if len(config["hours"]) == 24
+                else f"Hour of data (valid hours: {', '.join(map(str, config['hours']))})"
+            )
+            parser.add_argument(
+                "--hour",
+                type=int,
+                help=f"{hour_help}. If not specified, process all valid hours.",
+                default=None,
+            )
+        
+        if len(config["regions"]) > 1:
+            parser.add_argument(
+                "--region",
+                choices=config["regions"],
+                default=config["default_region"],
+                help=f"Specify the dataset region (default: {config['default_region']})",
+            )
 
     parser.add_argument(
         "--overwrite",
@@ -87,42 +189,78 @@ def _add_common_arguments(parser, provider_name):
         help="Overwrite existing files in output directories",
     )
 
+def parse_chunks(chunks_str: str) -> Dict[str, int]:
+    """
+    Parse chunks string into dictionary.
 
-def parse_chunks(chunks_str):
-    """Parse chunks string into dictionary."""
+    Args:
+        chunks_str (str): Chunk specification string (e.g., 'time:24,latitude:100')
+
+    Returns:
+        Dict[str, int]: Dictionary mapping dimensions to chunk sizes
+
+    Raises:
+        ValueError: If chunk string is malformed
+    """
     if not chunks_str:
         return None
-    chunks = {}
-    for chunk in chunks_str.split(","):
-        dim, size = chunk.split(":")
-        chunks[dim.strip()] = int(size)
-    return chunks
-
-
-def handle_load(provider: str, year: int, month: int, day: int, **kwargs):
-    """Handle loading archived data."""
-    chunks = parse_chunks(kwargs.get("chunks"))
-    remote = kwargs.get("remote", False)
-    hour = kwargs.get("hour")
-
-    # Base path for the data
-    base_path = Path("data") / str(year) / f"{month:02d}" / f"{day:02d}"
-
+    
     try:
+        chunks = {}
+        for chunk in chunks_str.split(","):
+            dim, size = chunk.split(":")
+            chunks[dim.strip()] = int(size)
+        return chunks
+    except ValueError as e:
+        raise ValueError(
+            "Invalid chunk specification. Format should be 'dim1:size1,dim2:size2'"
+        ) from e
+
+def handle_load(provider: str, year: int, month: int, day: int, **kwargs) -> Any:
+    """
+    Handle loading archived data.
+
+    Args:
+        provider (str): Data provider name
+        year (int): Year of data
+        month (int): Month of data
+        day (int): Day of data
+        **kwargs: Additional arguments including chunks, remote, and hour
+
+    Returns:
+        Any: Loaded dataset
+
+    Raises:
+        FileNotFoundError: If the data file doesn't exist
+        ValueError: If the arguments are invalid
+    """
+    try:
+        # Validate arguments
+        validate_date(year, month, day)
+        if "hour" in kwargs and kwargs["hour"] is not None:
+            validate_hour(kwargs["hour"], provider)
+
+        chunks = parse_chunks(kwargs.get("chunks"))
+        remote = kwargs.get("remote", False)
+        hour = kwargs.get("hour")
+
+        # Base path for the data
+        base_path = Path("data") / str(year) / f"{month:02d}" / f"{day:02d}"
+
         if hour is not None:
             # Load specific hour
             archive_path = base_path / f"{year}-{month:02d}-{day:02d}-{hour:02d}.zarr.zip"
+            logger.info(f"Loading dataset for {year}-{month:02d}-{day:02d} hour {hour:02d}")
             dataset = load_zarr_data(
                 archive_path,
                 chunks=chunks,
                 remote=remote,
                 download=not remote,
             )
-            logger.info(
-                f"Successfully loaded dataset for {year}-{month:02d}-{day:02d} hour {hour:02d}"
-            )
+            logger.info(f"Successfully loaded dataset for {year}-{month:02d}-{day:02d} hour {hour:02d}")
         else:
             # Load all hours for the day
+            logger.info(f"Loading all datasets for {year}-{month:02d}-{day:02d}")
             dataset = load_zarr_data_for_day(
                 base_path,
                 year,
@@ -132,59 +270,77 @@ def handle_load(provider: str, year: int, month: int, day: int, **kwargs):
                 remote=remote,
                 download=not remote,
             )
-            logger.info(
-                f"Successfully loaded all available datasets for {year}-{month:02d}-{day:02d}"
-            )
+            logger.info(f"Successfully loaded all datasets for {year}-{month:02d}-{day:02d}")
 
         return dataset
+
+    except FileNotFoundError as e:
+        logger.error(f"Data file not found: {e}")
+        raise
+    except ValueError as e:
+        logger.error(f"Invalid argument: {e}")
+        raise
     except Exception as e:
         logger.error(f"Error loading dataset: {e}")
         raise
 
-
 def configure_parser():
-    """Configure the main argument parser for the CLI tool."""
-    parser = argparse.ArgumentParser(prog="open-data-pvnet", description="Open Data PVNet CLI")
+    """
+    Configure the main argument parser for the CLI tool.
 
-    # Create a parent parser for the --list argument
-    parser.add_argument(
-        "--list",
-        choices=["providers"],
-        help="List available options (e.g., providers)",
-        nargs="?",  # Make it optional
+    Returns:
+        argparse.ArgumentParser: Configured argument parser
+
+    The parser supports the following commands:
+    - metoffice: Download and process Met Office data
+    - gfs: Download and process GFS data
+    - dwd: Download and process DWD data
+    """
+    parser = argparse.ArgumentParser(
+        description="CLI tool for downloading and processing weather data from various providers."
     )
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # Create subparsers for commands (providers)
-    subparsers = parser.add_subparsers(dest="command", help="Data provider")
-
-    # Add provider-specific parsers
-    for provider in ["metoffice", "gfs", "dwd"]:
+    # Create subparsers for each provider
+    for provider in PROVIDERS:
         provider_parser = subparsers.add_parser(
-            provider, help=f"Commands for {provider.capitalize()} data"
+            provider,
+            help=f"Download and process {provider.upper()} data",
+            description=f"Download and process weather data from {provider.upper()}",
         )
+        
+        # Add operation subparsers (archive/load)
         operation_subparsers = provider_parser.add_subparsers(
-            dest="operation", help="Operation to perform"
+            dest="operation",
+            help="Operation to perform",
+            required=True
         )
 
-        # Archive operation parser
+        # Archive operation
         archive_parser = operation_subparsers.add_parser(
-            "archive", help="Archive data locally"
+            "archive",
+            help="Archive data for a specific time period",
+            description="Download and archive weather data for a specific time period",
         )
         _add_common_arguments(archive_parser, provider)
-        archive_parser.add_argument(
-            "--workers",
-            type=int,
-            default=1,
-            help="Number of concurrent workers for parallel processing (default: 1)",
-        )
 
-        # Load operation parser
-        load_parser = operation_subparsers.add_parser("load", help="Load archived data")
+        # Load operation
+        load_parser = operation_subparsers.add_parser(
+            "load",
+            help="Load archived data",
+            description="Load previously archived weather data",
+        )
         _add_common_arguments(load_parser, provider)
         load_parser.add_argument(
             "--chunks",
             type=str,
-            help="Chunking specification in format 'dim1:size1,dim2:size2' (e.g., 'time:24,latitude:100')",
+            help="Chunk specification (e.g., 'time:24,latitude:100')",
+            default=None,
+        )
+        load_parser.add_argument(
+            "--remote",
+            action="store_true",
+            help="Load data from remote storage",
         )
 
     return parser
@@ -355,89 +511,84 @@ def archive_to_hf(provider: str, year: int, month: int, day: int = None, **kwarg
 
 
 def main():
-    """Entry point for the Open Data PVNet CLI tool.
-
-    Examples:
-    ---------
-    Met Office Data:
-        # Archive all hours for a given day with default workers (1)
-        open-data-pvnet metoffice archive --year 2023 --month 12 --day 1 --region uk -o
-
-        # Archive all hours for a given day with parallel processing with 4 workers
-        open-data-pvnet metoffice archive --year 2023 --month 12 --day 1 --region uk -o --workers 4
-
-        # Archive global region data for a specific hour
-        open-data-pvnet metoffice archive --year 2023 --month 12 --day 1 --hour 12 --region uk -o
-
-        # Archive as tar instead of zarr.zip
-        open-data-pvnet metoffice archive --year 2023 --month 12 --day 1 --hour 12 --region uk -o --archive-type tar
-
-    GFS Data:
-        Partially implemented
-
-    DWD Data:
-        # Archive DWD data for a specific day
-        open-data-pvnet dwd archive --year 2023 --month 1 --day 1 --region eu
-
-    Loading Data:
-        # Load local data with default chunking
-        open-data-pvnet metoffice load --year 2023 --month 1 --day 16 --hour 0 --region uk
-
-        # Load with custom chunking
-        open-data-pvnet metoffice load --year 2023 --month 1 --day 16 --hour 0 --region uk --chunks "time:24,latitude:100,longitude:100"
-
-    List Available Providers:
-        open-data-pvnet --list providers
     """
-    parser = configure_parser()
-    args = parser.parse_args()
+    Main entry point for the CLI tool.
 
-    # Handle the --list providers case first
-    if args.list == "providers":
-        print("Available providers:")
-        for provider in PROVIDERS:
-            if provider == "gfs":
-                print(f"- {provider} (partially implemented)")
+    This function:
+    1. Sets up logging and environment
+    2. Parses command line arguments
+    3. Validates arguments
+    4. Executes the requested operation
+    """
+    try:
+        # Initialize environment and logging
+        load_env_and_setup_logger()
+        
+        # Parse and validate arguments
+        parser = configure_parser()
+        args = parser.parse_args()
+        
+        if not args.command:
+            parser.print_help()
+            return
+            
+        # Validate arguments
+        validate_arguments(args)
+        
+        # Extract common arguments
+        provider = args.command
+        year = args.year
+        month = args.month
+        day = args.day
+        hour = getattr(args, "hour", None)
+        region = getattr(args, "region", PROVIDER_CONFIGS[provider]["default_region"])
+        overwrite = getattr(args, "overwrite", False)
+        
+        logger.info(f"Processing {provider.upper()} data for {year}-{month:02d}" + 
+                   (f"-{day:02d}" if day else "") +
+                   (f" hour {hour:02d}" if hour is not None else "") +
+                   f" (region: {region})")
+
+        if args.operation == "archive":
+            # Handle archiving operation
+            if provider == "metoffice":
+                config_path = CONFIG_PATHS[region]
+                handle_archive(config_path, year, month, day, hour, overwrite)
             elif provider == "dwd":
-                print(f"- {provider}")
+                process_dwd_data(year, month, day, hour, overwrite)
             else:
-                print(f"- {provider}")
-        return 0
-
-    # For all other commands, we need a provider and operation
-    if not args.command or not args.operation:
-        parser.print_help()
-        return 1
-
-    # Load environment variables
-    load_env_and_setup_logger()
-
-    # Execute the requested operation
-    if args.operation == "load":
-        load_kwargs = {
-            "provider": args.command,
-            "year": args.year,
-            "month": args.month,
-            "day": args.day,
-            "hour": args.hour,
-            "region": args.region,
-            "overwrite": args.overwrite,
-            "chunks": args.chunks,
-        }
-        handle_load(**load_kwargs)
-    elif args.operation == "archive":
-        archive_kwargs = {
-            "provider": args.command,
-            "year": args.year,
-            "month": args.month,
-            "day": args.day,
-            "hour": getattr(args, "hour", None),
-            "region": getattr(args, "region", None),
-            "overwrite": args.overwrite,
-        }
-        archive_to_hf(**archive_kwargs)
-
-    return 0
+                raise NotImplementedError(f"Archive operation not implemented for {provider}")
+                
+        elif args.operation == "load":
+            # Handle loading operation
+            chunks = getattr(args, "chunks", None)
+            remote = getattr(args, "remote", False)
+            
+            dataset = handle_load(
+                provider=provider,
+                year=year,
+                month=month,
+                day=day,
+                hour=hour,
+                chunks=chunks,
+                remote=remote,
+            )
+            
+            logger.info("Dataset loaded successfully")
+            return dataset
+            
+    except ValueError as e:
+        logger.error(f"Validation error: {e}")
+        return None
+    except FileNotFoundError as e:
+        logger.error(f"File not found: {e}")
+        return None
+    except NotImplementedError as e:
+        logger.error(f"Not implemented: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return None
 
 
 if __name__ == "__main__":
