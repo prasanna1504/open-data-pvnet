@@ -1,6 +1,8 @@
-name: dwd-icon-eu
-platform: huggingface
-dataset_name: pvnet/dwd-icon-eu
+general:
+  description: Config for accessing DWD (Deutscher Wetterdienst) ICON-EU NWP data
+  name: PVNet current (DWD)
+  destination_platform: "huggingface"
+  destination_dataset_id: "openclimatefix/dwd-icon-eu-deterministic-solar"  # Updated dataset ID
 
 grid:
   height: 561
@@ -8,27 +10,35 @@ grid:
   latitude_bounds: [65.0, 30.0]  # [max, min] for descending order
   longitude_bounds: [-23.5, 45.0]  # [min, max]
 
-variables:
-  - t_2m
-  - t_g
-  - aswdifd_s
-  - aswdir_s
-  - relhum_2m
-  - td_2m
-  - u_10m
-  - v_10m
-  - vmax_10m
-  - pmsl
-  - clct
-  - clcl
-  - clcm
-  - clch
-  - ww
-  - z0
-  - h_snow
-  - w_snow
-  - tot_prec
-  - runoff_g
-  - runoff_s
-  - cape_con
-  - alb_rad
+input_data:
+  nwp:
+    dwd:
+      local_output_dir: "data/dwd"
+      nwp_channels:
+        - T_2M  # 2m temperature
+        - CLCT  # Total cloud cover
+      nwp_accum_channels:
+        - ASWDIR_S  # Direct shortwave radiation at surface, accumulated
+
+output_data:
+  format: zarr
+  compression:
+    compressor: blosc
+    cname: zstd
+    clevel: 5
+    shuffle: 2
+
+metadata:
+  variables:
+    T_2M:
+      name: temperature_2m
+      units: K
+      description: Temperature at 2m above ground
+    CLCT:
+      name: total_cloud_cover
+      units: "%"
+      description: Total cloud cover
+    ASWDIR_S:
+      name: direct_shortwave_radiation_surface
+      units: J/m²
+      description: Direct shortwave radiation at surface, accumulated
